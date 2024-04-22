@@ -56,7 +56,7 @@ function install_package() {
 
         sub_dirs=("minecraft" "spigotserver")
         for dir in "${sub_dirs[@]}"; do
-            if [ ! -d "tmp/apps/$dir" ]; then
+            if [ ! -d "/tmp/apps/$dir" ]; then
                 echo "$dir does nost exist in the apps directory. Creating..."
                 mkdir "/tmp/apps/$dir"
                 if [ $? -ne 0 ]; then
@@ -70,13 +70,13 @@ function install_package() {
     case $package_to_install in
         minecraft)
             # Download and install the Minecraft package
-            wget -P tmp/apps/minecraft $minecraft_url
+            wget -P /tmp/apps/minecraft $minecraft_url
             if [ $? -ne 0 ]; then
-                handle_error "Failed to download Minecraft"
+                rollback_minecraft
             fi
-            sudo gdebi -n tmp/apps/minecraft/Minecraft.deb
+            sudo gdebi -n /tmp/apps/minecraft/Minecraft.deb
             if [ $? -ne 0 ]; then
-                handle_error "Failed to install Minecraft"
+                rollback_minecraft
             fi
             ;;
         spigotserver)
@@ -228,18 +228,23 @@ function handle_error() {
 function rollback_minecraft() {
     # Do NOT remove next line!
     echo "function rollback_minecraft"
+
+    # Uninstall Minecraft
+    sudo apt remove -y minecraft-launcher
+    if [ $? -ne 0 ]; then
+        handle_error "Failed to remove Minecraft LAuncher"
+    fi
+
     # Remove the downloaded Minecraft package
-    rm -f apps/minecraft/Minecraft.deb
+    rm -f /tmp/apps/minecraft/Minecraft.deb
     if [ $? -ne 0 ]; then
         handle_error "Failed to remove Minecraft.deb"
-        return 1
     fi
 
     # Remove the Minecraft directory
-    rm -rf apps/minecraft
+    rm -rf /tmp/apps/minecraft
     if [ $? -ne 0 ]; then
         handle_error "Failed to remove Minecraft directory"
-        return 1
     fi
     # TODO if something goes wrong then call function handle_error
 
@@ -267,13 +272,13 @@ function rollback_spigotserver {
                                                                           fi
 
                                                                           # Remove the BuildTools.jar file
-                                                                          rm -f apps/spigotserver/BuildTools.jar
+                                                                          rm -f a/tmp/pps/spigotserver/BuildTools.jar
                                                                           if [ $? -ne 0 ]; then
                                                                               handle_error "Failed to remove BuildTools.jar"
                                                                           fi
 
                                                                           # Remove the spigotserver directory
-                                                                          rm -rf apps/spigotserver
+                                                                          rm -rf /tmp/apps/spigotserver
                                                                           if [ $? -ne 0 ]; then
                                                                               handle_error "Failed to remove spigotserver directory"
 
@@ -293,9 +298,9 @@ function uninstall_minecraft {
 
     # TODO if something goes wrong then call function handle_error
 
-    minecraft-launcher --clean
+    sudo apt remove -y minecraft-launcher
     # Remove the directory containing Minecraft
-    rm -rf apps/minecraft
+    rm -rf /tmp/apps/minecraft
     if [ $? -ne 0 ]; then
         handle_error "Failed to remove Minecraft directory"
     fi
@@ -478,7 +483,7 @@ function main() {
             minecraft_action=$2
             case $minecraft_action in
                 --install)
-                    install_package
+                    install_package $arg1
                     ;;
                 --test)
                     test_minecraft
