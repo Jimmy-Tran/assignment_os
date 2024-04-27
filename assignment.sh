@@ -58,7 +58,7 @@ function install_package() {
         for dir in "${sub_dirs[@]}"; do
             if [ ! -d "/tmp/apps/$dir" ]; then
                 echo "$dir does nost exist in the apps directory. Creating..."
-                mkdir "/tmp/apps/$dir"
+                sudo mkdir "/tmp/apps/$dir"
                 if [ $? -ne 0 ]; then
                     handle_error "Failed to create $dir directory"
                 fi
@@ -81,11 +81,11 @@ function install_package() {
             ;;
         spigotserver)
             # Download and execute the BuildTools.jar file to compile the Spigot server
-            wget -P tmp/apps/spigotserver $buildtools_url
+            wget -P /tmp/apps/spigotserver $buildtools_url
             if [ $? -ne 0 ]; then
                 handle_error "Failed to download BuildTools"
             fi
-            java -jar tmp/apps/spigotserver/BuildTools.jar
+            java -jar /tmp/apps/spigotserver/BuildTools.jar
             if [ $? -ne 0 ]; then
                 handle_error "Failed to execute BuildTools"
             fi
@@ -94,7 +94,6 @@ function install_package() {
             ;;
         *)
             handle_error "Invalid package: $package_to_install"
-            return 1
             ;;
     esac
 
@@ -215,7 +214,7 @@ function handle_error() {
     echo "function handle_error"
 
     # TODO read the arguments from $@
-        # Make sure NOT to use empty argument values
+    # Make sure NOT to use empty argument values
     error=$1
     # TODO print a specific error message
     echo "Error: $error"
@@ -232,7 +231,7 @@ function rollback_minecraft() {
     # Uninstall Minecraft
     sudo apt remove -y minecraft-launcher
     if [ $? -ne 0 ]; then
-        handle_error "Failed to remove Minecraft LAuncher"
+        handle_error "Failed to remove Minecraft Launcher"
     fi
 
     # Remove the downloaded Minecraft package
@@ -295,14 +294,37 @@ function uninstall_minecraft {
     echo "function uninstall_minecraft"
 
     # TODO remove the directory containing minecraft
+    if [ -d "/tmp/MinecraftLauncher.1000" ]; then
+        echo "Found MinecraftLauncher folder trying to delete it.."
+        rm -rf /tmp/MinecraftLauncher.1000
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to remove MinecraftLauncher folder"
+        fi
+    fi
+
+    if [ -d ~/.minecraft ]; then
+        echo "Found the .minecraft folder"
+        rm -rf ~/.minecraft
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to delete .minecraft"
+        fi
+    fi
 
     # TODO if something goes wrong then call function handle_error
-
-    sudo apt remove -y minecraft-launcher
+    if dpkg -l | grep -q minecraft-launcher; then
+        echo "Minecraft-launcher package is installed"
+        sudo apt remove -y minecraft-launcher
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to remove Minecraft launcher"
+        fi
+    fi
     # Remove the directory containing Minecraft
-    rm -rf /tmp/apps/minecraft
-    if [ $? -ne 0 ]; then
-        handle_error "Failed to remove Minecraft directory"
+    if [ -d "/tmp/apps/minecraft" ]; then
+        echo "Found Minecraft folder trying to delete it.."
+        rm -rf /tmp/apps/minecraft
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to remove Minecraft directory"
+        fi
     fi
 
 }
@@ -384,11 +406,41 @@ function test_minecraft() {
     # Do NOT remove next line!
     echo "function test_minecraft"
 
-    # TODO Start minecraft
+    # Delete all previous log file for launchers so there will be only one launcher_log.txt
+    find ~/.minecraft -type f -name 'launcher_log*' -delete
+    # TODO(done) Start minecraft
+    minecraft-launcher > /dev/null 2>&1 &
+    PID=$!
 
-    # TODO Check if minecraft is working correctly
+    if [ $? -eq 0 ]; then
+        echo "Started successfully"
+        sleep 5
+        
+        # TODO Check if minecraft is working correctly
         # e.g. by checking the logfile
 
+        latest_log=$(ls -rt ~/.minecraft/launcher_log.txt | head -n 1)
+        if [ -z "$latest_log" ]; then
+            handle_error "No log file found for the launcher"
+        else
+            if grep -q "Error" "$latest_log"; then
+                handle_error "Minecraft started with an error"
+            else 
+                echo "Minecraft started with no errors"
+            fi
+        fi
+    else
+        handle_error "Failed to start minecraft"
+    fi
+
+    launcher_process=$(pgrep -f "minecraft-launcher")
+    if [[ -z "$launcher_process" ]]; then
+        echo "no process found of ml"
+    else
+        echo "killing process"
+        sleep 30
+        kill $launcher_process
+    fi
     # TODO Stop minecraft after testing
         # use the kill signal only if minecraft canNOT be stopped normally
 
@@ -396,7 +448,7 @@ function test_minecraft() {
 
 function test_spigotserver() {
     # Do NOT remove next line!
-    echo "function test_spigotserver"
+    echo "function test_spigotserver"ps au
 
     # TODO Start the spigotserver
 
