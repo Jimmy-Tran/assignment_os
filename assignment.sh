@@ -2,6 +2,7 @@
 
 # TODO Write down your name and studentnumber of the author(s)
 # Jimmy Tran (1052827)
+# Joel Verveer (1062069)
 
 # Global variables
 # TODO Define (only) the variables which require global scope
@@ -28,6 +29,10 @@ function install_with_apt() {
         if [ $? -ne 0 ]; then
             handle_error "Error: failed to install $package failed"
         fi
+        sudo apt-get autoremove -y
+        if [ $? -ne 0 ]; then
+            handle_error "Error: failed to autoremove packages"
+        fi
 
 
     # TODO if something goes wrong then call function handle_error
@@ -53,12 +58,13 @@ function install_package() {
 
     minecraft_url=$MINECRAFT_URL
     buildtools_url=$BUILDTOOLS_URL
+    installation_directory=$HOME$INSTALL_DIR
 
         sub_dirs=("minecraft" "spigotserver")
         for dir in "${sub_dirs[@]}"; do
-            if [ ! -d "/tmp/apps/$dir" ]; then
-                echo "$dir does nost exist in the apps directory. Creating..."
-                sudo mkdir "/tmp/apps/$dir"
+            if [ ! -d "$installation_directory/$dir" ]; then
+                echo "$dir does not exist in the apps directory. Creating..."
+                mkdir "$installation_directory/$dir"
                 if [ $? -ne 0 ]; then
                     handle_error "Failed to create $dir directory"
                 fi
@@ -70,27 +76,102 @@ function install_package() {
     case $package_to_install in
         minecraft)
             # Download and install the Minecraft package
-            wget -P /tmp/apps/minecraft $minecraft_url
+            wget -P $installation_directory/minecraft $minecraft_url
             if [ $? -ne 0 ]; then
                 rollback_minecraft
             fi
-            sudo gdebi -n /tmp/apps/minecraft/Minecraft.deb
+            sudo gdebi -n $installation_directory/minecraft/Minecraft.deb
             if [ $? -ne 0 ]; then
                 rollback_minecraft
             fi
             ;;
         spigotserver)
-            # Download and execute the BuildTools.jar file to compile the Spigot server
-            wget -P /tmp/apps/spigotserver $buildtools_url
+            install_dir="$installation_directory/spigotserver"
+
+            # Create the installation directory if it doesn't exist
+            if [ ! -d "$install_dir" ]; then
+                echo "Creating installation directory at $install_dir"
+                mkdir -p "$install_dir"
+                if [ $? -ne 0 ]; then
+                    rollback_spigotserver
+                    handle_error "Failed to create installation directory at $install_dir"
+                fi
+            fi
+
+            # Download BuildTools.jar to the installation directory
+            wget -P "$install_dir" "$buildtools_url"
             if [ $? -ne 0 ]; then
+                rollback_spigotserver
                 handle_error "Failed to download BuildTools"
             fi
-            java -jar /tmp/apps/spigotserver/BuildTools.jar
+
+            current_dir=$(pwd)
+            # Save the current working directory and change to the installation directory
+            cd "$install_dir" > /dev/null
             if [ $? -ne 0 ]; then
+                rollback_spigotserver
+                handle_error "Failed to change directory to $install_dir"
+            fi
+
+            java -jar "BuildTools.jar" --final-name spigot.jar
+            if [ $? -ne 0 ]; then
+                rollback_spigotserver
                 handle_error "Failed to execute BuildTools"
             fi
-            # Create the Spigot service
+
+            # Return to the previous working directory
+            cd "$current_dir" > /dev/null
+            if [ $? -ne 0 ]; then
+                rollback_spigotserver
+                handle_error "Failed to return to the previous working directory"
+            fi
+
+            # TODO SPIGOTSERVER
+            # Define the source path to spigotstart.sh
+            source_path="spigotstart.sh"
+
+            # Check if the file exists
+            if [ ! -f "$source_path" ]; then
+                rollback_spigotserver
+                handle_error "spigotstart.sh file not found at $source_path"
+            fi
+
+            # Copy spigotstart.sh to the installation directory
+            cp "$source_path" "$install_dir/spigotstart.sh"
+            if [ $? -ne 0 ]; then
+                rollback_spigotserver
+                handle_error "Failed to copy spigotstart.sh to $install_dir"
+            fi
+
+            # Provide the user with execute permission for the script
+            chmod +x "$install_dir/spigotstart.sh"
+            if [ $? -ne 0 ]; then
+                rollback_spigotserver
+                handle_error "Failed to provide execute permission for spigotstart.sh"
+            fi
+
+            current_dir=$(pwd)
+            cd "$install_dir"
+
+            # this will print an error because EULA is not true
+            ./spigotstart.sh
+
+            cd "$current_dir"
+
+            # fix the error by setting EULA = true
+            echo "Accepting EULA"
+            echo "eula=true" > "$install_dir/eula.txt"
+            if [ $? -ne 0 ]; then
+                handle_error "Unable to accept eula."
+            fi
+
+
+            # Create the spigot service
             create_spigotservice
+
+            # Configure the spigot server
+            configure_spigotserver
+
             ;;
         *)
             handle_error "Invalid package: $package_to_install"
@@ -139,43 +220,54 @@ function configure_spigotserver() {
 
     # TODO Configure Firewall
         # make sure ufw has been installed
-        if ! dpkg -l | grep -q ufw; then
-            echo "ufw is not installed. Installing..."
-            install_with_apt ufw
-            if [ $? -ne 0 ]; then
-                handle_error "Failed to install ufw"
-            fi
+    if ! sudo ufw --version > /dev/null; then
+        echo "ufw is not installed. Installing..."
+        install_with_apt ufw
+        if [ $? -ne 0 ]; then
+            rollback_spigotserver
+            handle_error "Failed to install ufw"
         fi
+    fi
     # TODO allow SSH port with ufw allow OpenSSH
         # use ufw to allow the port that is specified in dev.conf for the Spigot server to accept connections
-        # make sure ufw has been enabled
-      sudo ufw allow OpenSSH
-      if [ $? -ne 0 ]; then
-          handle_error "Failed to allow OpenSSH"
-      fi
+    sudo ufw allow OpenSSH
+    if [ $? -ne 0 ]; then
+        rollback_spigotserver
+        handle_error "Failed to allow OpenSSH"
+    fi
 
-          sudo ufw allow $SPIGOTSERVER_PORT
-          if [ $? -ne 0 ]; then
-              handle_error "Failed to allow Spigot server port"
-          fi
-              sudo ufw enable
-              if [ $? -ne 0 ]; then
-                  handle_error "Failed to enable ufw"
-                  return 1
-              fi
+    sudo ufw allow $SPIGOTSERVER_PORT
+    if [ $? -ne 0 ]; then
+        rollback_spigotserver
+        handle_error "Failed to allow Spigot server port"
+    fi
+
+    sudo ufw enable
+    if [ $? -ne 0 ]; then
+        rollback_spigotserver
+        handle_error "Failed to enable ufw"
+    fi
     # TODO configure spigotserver to run creative gamemode instead of survival
         # this can be done by running the sed command on the (automatically generated) file server.properties
         # (https://minecraft.fandom.com/wiki/Server.properties)
         # with the argument 's/\(gamemode=\)survival/\1creative/'
-    sed -i 's/\(gamemode=\)survival/\1creative/' server.properties
-    if [ $? -ne 0 ]; then
-        handle_error "Failed to configure Spigot server gamemode"
-        return 1
+    server_properties_file="${HOME}$INSTALL_DIR/spigotserver/server.properties"
+
+    # Modify server.properties file to set gamemode to creative
+    if [ -f "$server_properties_file" ]; then
+        sed -i 's/\(gamemode=\)survival/\1creative/' "$server_properties_file"
+        if [ $? -ne 0 ]; then
+            rollback_spigotserver
+            handle_error "Failed to configure gamemode in server.properties"
+        fi
+    else
+        handle_error "server.properties file not found at $server_properties_file"
     fi
     # TODO restart the spigot service
+    sudo systemctl restart spigot
     if [ $? -ne 0 ]; then
+        rollback_spigotserver
         handle_error "Failed to restart Spigot service"
-        return 1
     fi
     # TODO if something goes wrong then call function handle_error
 
@@ -190,18 +282,27 @@ function create_spigotservice() {
     # TODO copy spigot.service to /etc/systemd/system/spigot.service
     sudo cp spigot.service /etc/systemd/system/spigot.service
     if [ $? -ne 0 ]; then
+        rollback_spigotserver
         handle_error "Failed to copy spigot.service"
     fi
     # TODO reload the service daemon (systemctl daemon-reload)
     sudo systemctl daemon-reload
     if [ $? -ne 0 ]; then
+        rollback_spigotserver
         handle_error "Failed to reload the service daemon"
     fi
     # TODO enable the service using systemctl
-      sudo systemctl enable spigot.service
-      if [ $? -ne 0 ]; then
-          handle_error "Failed to enable spigot.service"
-      fi
+    sudo systemctl enable spigot
+    if [ $? -ne 0 ]; then
+        rollback_spigotserver
+        handle_error "Failed to enable spigot.service"
+    fi
+
+    sudo systemctl start spigot
+    if [ $? -ne 0 ]; then
+        rollback_spigotserver
+        handle_error "Failed to enable spigot.service"
+    fi
     # TODO if something goes wrong then call function handle_error
 
 }
@@ -216,11 +317,17 @@ function handle_error() {
     # TODO read the arguments from $@
     # Make sure NOT to use empty argument values
     error=$1
-    # TODO print a specific error message
-    echo "Error: $error"
+    # Check if the error argument is empty
+    if [ -z "$error" ]; then
+        echo "Error: No error message provided"
+    else
+      # TODO print a specific error message
+      echo "Error: $error"
+    fi
     # TODO exit this function with an integer value!=0
     exit 1
 }
+
 
 # TODO complete the implementation of this function
 # Make sure to use sudo only if needed
@@ -228,25 +335,32 @@ function rollback_minecraft() {
     # Do NOT remove next line!
     echo "function rollback_minecraft"
 
-    # Uninstall Minecraft
-    sudo apt remove -y minecraft-launcher
-    if [ $? -ne 0 ]; then
-        handle_error "Failed to remove Minecraft Launcher"
+    # Check if Minecraft Launcher is installed before trying to remove it
+    if dpkg -l | grep -q minecraft-launcher; then
+        # Uninstall Minecraft
+        sudo apt remove -y minecraft-launcher
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to remove Minecraft Launcher"
+        fi
     fi
 
-    # Remove the downloaded Minecraft package
-    rm -f /tmp/apps/minecraft/Minecraft.deb
-    if [ $? -ne 0 ]; then
-        handle_error "Failed to remove Minecraft.deb"
+    # Check if the downloaded Minecraft package exists before trying to remove it
+    if [ -f $HOME$INSTALL_DIR/minecraft/Minecraft.deb ]; then
+        # Remove the downloaded Minecraft package
+        rm -f $HOME$INSTALL_DIR/minecraft/Minecraft.deb
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to remove Minecraft.deb"
+        fi
     fi
 
-    # Remove the Minecraft directory
-    rm -rf /tmp/apps/minecraft
-    if [ $? -ne 0 ]; then
-        handle_error "Failed to remove Minecraft directory"
+    # Check if the Minecraft directory exists before trying to remove it
+    if [ -d $HOME$INSTALL_DIR/minecraft ]; then
+        # Remove the Minecraft directory
+        rm -rf $HOME$INSTALL_DIR/minecraft
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to remove Minecraft directory"
+        fi
     fi
-    # TODO if something goes wrong then call function handle_error
-
 }
 
 # TODO complete the implementation of this function
@@ -255,33 +369,50 @@ function rollback_spigotserver {
     # Do NOT remove next line!
     echo "function rollback_spigotserver"
 
-    # TODO if something goes wrong then call function handle_errorfunction rollback_spigotserver {
-                                                                          # Do NOT remove next line!
-                                                                          echo "function rollback_spigotserver"
-                                                                          # Stop the Spigot service
+    # Stop the Spigot service
     sudo systemctl stop spigot.service
-                                                                          if [ $? -ne 0 ]; then
-                                                                              handle_error "Failed to stop Spigot service"
-                                                                          fi
+    if [ $? -ne 0 ]; then
+        handle_error "Failed to stop Spigot service"
+    fi
 
-                                                                          # Disable the Spigot service
-                                                                          sudo systemctl disable spigot.service
-                                                                          if [ $? -ne 0 ]; then
-                                                                              handle_error "Failed to disable Spigot service"
-                                                                          fi
+    # Disable the Spigot service
+    if [ -f "/etc/systemd/system/spigot.service" ]; then
+        sudo systemctl disable spigot.service
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to disable Spigot service"
+        fi
+        sudo rm -rf "/etc/systemd/system/spigot.service"
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to remove spigot.service file"
+        fi
+        sudo systemctl daemon-reload
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to reload system daemon"
+        fi
+    fi
 
-                                                                          # Remove the BuildTools.jar file
-                                                                          rm -f a/tmp/pps/spigotserver/BuildTools.jar
-                                                                          if [ $? -ne 0 ]; then
-                                                                              handle_error "Failed to remove BuildTools.jar"
-                                                                          fi
+    # rollback for ufw commands
+    sudo ufw disable
+    if [ $? -ne 0 ]; then
+        handle_error "Failed to disable ufw"
+    fi
+    sudo ufw delete allow "$SPIGOTSERVER_PORT"
+    if [ $? -ne 0 ]; then
+        handle_error "Failed to delete allow $SPIGOTSERVER_PORT"
+    fi
+    sudo ufw delete allow OpenSSH
+    if [ $? -ne 0 ]; then
+        handle_error "Failed to delete allow OpenSSH"
+    fi
+    # Remove the spigotserver directory
+    if [ -d "$HOME$INSTALL_DIR/spigotserver" ]; then
+        rm -rf $HOME/apps/spigotserver
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to remove spigotserver directory"
 
-                                                                          # Remove the spigotserver directory
-                                                                          rm -rf /tmp/apps/spigotserver
-                                                                          if [ $? -ne 0 ]; then
-                                                                              handle_error "Failed to remove spigotserver directory"
+        fi
+    fi
 
-                                                                          fi
 }
 
 
@@ -294,9 +425,9 @@ function uninstall_minecraft {
     echo "function uninstall_minecraft"
 
     # TODO remove the directory containing minecraft
-    if [ -d "/tmp/MinecraftLauncher.1000" ]; then
+    if [ -d "$HOME/MinecraftLauncher.1000" ]; then
         echo "Found MinecraftLauncher folder trying to delete it.."
-        rm -rf /tmp/MinecraftLauncher.1000
+        rm -rf $HOME/MinecraftLauncher.1000
         if [ $? -ne 0 ]; then
             handle_error "Failed to remove MinecraftLauncher folder"
         fi
@@ -319,9 +450,9 @@ function uninstall_minecraft {
         fi
     fi
     # Remove the directory containing Minecraft
-    if [ -d "/tmp/apps/minecraft" ]; then
+    if [ -d "$HOME$INSTALL_DIR/minecraft" ]; then
         echo "Found Minecraft folder trying to delete it.."
-        rm -rf /tmp/apps/minecraft
+        rm -rf $HOME$INSTALL_DIR/minecraft
         if [ $? -ne 0 ]; then
             handle_error "Failed to remove Minecraft directory"
         fi
@@ -331,16 +462,26 @@ function uninstall_minecraft {
 
 # TODO complete the implementation of this function
 # Make sure to use sudo only if needed
-function uninstall_spigotserver {
+function uninstall_spigotserver() {
     # Do NOT remove next line!
     echo "uninstall_spigotserver"
 
-    # TODO remove the directory containing spigotserver
+    # Define the installation directory for the Spigot server
+    install_dir="${HOME}$INSTALL_DIR/spigotserver"
 
-    # TODO create a service by calling the function create_spigotservice
+    # Remove the directory containing the Spigot server
+    if [ -d "$install_dir" ]; then
+        echo "Removing Spigot server directory: $install_dir"
+        rm -rf "$install_dir"
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to remove Spigot server directory at $install_dir"
+        fi
+    else
+        echo "Spigot server directory not found at $install_dir"
+    fi
 
-    # TODO if something goes wrong then call function handle_error
-
+    # Uninstall the Spigot service by calling the uninstall_spigotservice function
+    uninstall_spigotservice
 }
 
 # TODO complete the implementation of this function
@@ -348,6 +489,11 @@ function uninstall_spigotserver {
 function uninstall_spigotservice {
     # Do NOT remove next line!
     echo "uninstall_spigotservice"
+
+    sudo systemctl stop spigot
+    if [ $? -ne 0 ]; then
+        handle_error "Failed to stop spigot.service"
+    fi
 
     # TODO disable the spigotservice with systemctl disable
     sudo systemctl disable spigot.service
@@ -359,8 +505,11 @@ function uninstall_spigotservice {
     if [ $? -ne 0 ]; then
         handle_error "Failed to delete spigot.service"
     fi
-    # TODO if something goes wrong then call function handle_error
 
+    sudo systemctl daemon-reload
+    if [ $? -ne 0 ]; then
+        handle_error "Failed to reload the service daemon"
+    fi
 }
 
 # TODO complete the implementation of this function
@@ -382,11 +531,17 @@ function remove() {
     fi
 
     # Remove other dependencies
-    dependencies=("gdebi" "wget" "make" "curl" "ufw")
+    dependencies=("gdebi" "wget" "make" "curl" "ufw" "openjdk-17-jre" "git")
     for dep in "${dependencies[@]}"; do
-        sudo apt-get remove -y $dep
-        if [ $? -ne 0 ]; then
-            handle_error "Failed to remove $dep"
+        # check if dependency exists
+        if command -v "$dep" > /dev/null 2>&1; then
+            echo "Uninstalling $dep..."
+            sudo apt-get remove -y "$dep"
+            if [ $? -ne 0 ]; then
+                handle_error "Failed to uninstall $dep"
+            fi
+        else
+            echo "$dep is not installed, skipping..."
         fi
     done
 
@@ -410,54 +565,92 @@ function test_minecraft() {
     find ~/.minecraft -type f -name 'launcher_log*' -delete
     # TODO(done) Start minecraft
     minecraft-launcher > /dev/null 2>&1 &
-    PID=$!
 
-    if [ $? -eq 0 ]; then
-        echo "Started successfully"
+    # Wait for Minecraft to start
+    attempts=0
+    while ! pgrep -f "minecraft-launcher" > /dev/null; do
         sleep 5
-        
-        # TODO Check if minecraft is working correctly
-        # e.g. by checking the logfile
+        attempts=$((attempts + 1))
+        if [ $attempts -ge 10 ]; then
+            handle_error "Minecraft launcher did not start within expected time"
+        fi
+    done
+    echo "Minecraft launcher started successfully"
 
-        latest_log=$(ls -rt ~/.minecraft/launcher_log.txt | head -n 1)
-        if [ -z "$latest_log" ]; then
-            handle_error "No log file found for the launcher"
+    # Check if minecraft is working correctly
+    latest_log=$(ls -rt ~/.minecraft/launcher_log.txt | head -n 1)
+    if [ -z "$latest_log" ]; then
+        handle_error "No log file found for the launcher"
+    else
+        if grep -q "Error" "$latest_log"; then
+            handle_error "Minecraft started with an error"
         else
-            if grep -q "Error" "$latest_log"; then
-                handle_error "Minecraft started with an error"
-            else 
-                echo "Minecraft started with no errors"
-            fi
+            echo "Minecraft started with no errors"
+        fi
+    fi
+
+    # Stop minecraft after testing
+    if pgrep -f "minecraft-launcher" > /dev/null; then
+        echo "Killing Minecraft launcher process"
+        kill $PID
+        if [ $? -ne 0 ]; then
+            handle_error "Failed to kill Minecraft launcher process"
         fi
     else
-        handle_error "Failed to start minecraft"
+        echo "Minecraft launcher process not found"
     fi
-
-    launcher_process=$(pgrep -f "minecraft-launcher")
-    if [[ -z "$launcher_process" ]]; then
-        echo "no process found of ml"
-    else
-        echo "killing process"
-        sleep 30
-        kill $launcher_process
-    fi
-    # TODO Stop minecraft after testing
-        # use the kill signal only if minecraft canNOT be stopped normally
 
 }
 
 function test_spigotserver() {
     # Do NOT remove next line!
-    echo "function test_spigotserver"ps au
+    echo "function test_spigotserver"
+
+    # define variables
+    service_name="spigot.service"
+    install_dir="$HOME$INSTALL_DIR/spigotserver"
+    spigotserver_port=$SPIGOTSERVER_PORT
 
     # TODO Start the spigotserver
+    echo "Starting the Spigot server..."
+    cd "$install_dir"
+    if [ $? -ne 0 ]; then
+        handle_error "Failed to navigate to install dir"
+    fi
+    java -jar spigot.jar -nogui > /dev/null &
+    spigot_pid=$!
+    echo "Waiting for the startup"
+    sleep 15
 
     # TODO Check if spigotserver is working correctly
         # e.g. by checking if the API responds
         # if you need curl or aNOTher tool, you have to install it first
+    curl -s "localhost:$spigotserver_port"
+    curl_result="$?"
+    if [[ ! "$curl_result" == "52" ]]; then
+        if ps -ef | grep $spigot_pid | grep -v grep > /dev/null; then
+            kill -9 "$spigot_pid"
+        fi
+        handle_error "Spigot does not seem to be working correctly"
+    fi
 
     # TODO Stop the spigotserver after testing
+
+    echo "Stopping the Spigot server..."
+    sudo systemctl stop "$service_name"
+    if [ $? -ne 0 ]; then
+        echo "Failed to stop the Spigot server normally"
+
         # use the kill signal only if the spigotserver canNOT be stopped normally
+        pid=$(pgrep -f spigot)
+        if [ -n "$pid" ]; then
+            echo "Forcing Spigot server to stop using kill signal..."
+            sudo kill "$pid"
+            if [ $? -ne 0 ]; then
+                handle_error "Failed to kill Spigot server process"
+            fi
+        fi
+    fi
 
 }
 
@@ -466,12 +659,13 @@ function setup() {
     echo "function setup"
 
     # Define the dependencies
-    dependencies=("gdebi" "wget" "make" "curl")
+    dependencies=("gdebi" "wget" "make" "curl" "openjdk-17-jre" "git")
 
     # Check and install dependencies
     for dep in "${dependencies[@]}"; do
-        if ! command -v "$p" > /dev/null 2>&1; then
+        if ! command -v "$dep" > /dev/null 2>&1; then
             echo "$dep is not installed. Installing..."
+            # Install the dependency using apt
             install_with_apt $dep
             if [ $? -ne 0 ]; then
                 handle_error "Failed to install $dep"
@@ -482,13 +676,13 @@ function setup() {
     done
 
     # Define the installation directory and necessary files
-    install_dir="/tmp/apps"
+    install_dir="$HOME$INSTALL_DIR"
     sub_dirs=("minecraft" "spigotserver")
 
     # Check and create the installation directory
-    if [ ! -d $install_dir ]; then
+    if [ ! -d "$install_dir" ]; then
         echo "Installation directory does not exist. Creating..."
-        mkdir $install_dir
+        mkdir -p "$install_dir"
         if [ $? -ne 0 ]; then
             handle_error "Failed to create installation directory"
         fi
@@ -498,7 +692,7 @@ function setup() {
     for dir in "${sub_dirs[@]}"; do
         if [ ! -d "$install_dir/$dir" ]; then
             echo "$dir does not exist in the installation directory. Creating..."
-            mkdir "$install_dir/$dir"
+            mkdir -p "$install_dir/$dir"
             if [ $? -ne 0 ]; then
                 handle_error "Failed to create $dir directory"
             fi
@@ -554,10 +748,10 @@ function main() {
             spigot_action=$2
             case $spigot_action in
                 --install)
-                    install_spigot
+                    install_package $arg1
                     ;;
                 --test)
-                    test_spigot
+                    test_spigotserver
                     ;;
                 --uninstall)
                     uninstall_spigot
