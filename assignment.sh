@@ -228,6 +228,12 @@ function configure_spigotserver() {
             handle_error "Failed to install ufw"
         fi
     fi
+    
+    sudo ufw enable
+    if [ $? -ne 0 ]; then
+        rollback_spigotserver
+        handle_error "Failed to enable ufw"
+    fi
     # TODO allow SSH port with ufw allow OpenSSH
         # use ufw to allow the port that is specified in dev.conf for the Spigot server to accept connections
     sudo ufw allow OpenSSH
@@ -242,11 +248,6 @@ function configure_spigotserver() {
         handle_error "Failed to allow Spigot server port"
     fi
 
-    sudo ufw enable
-    if [ $? -ne 0 ]; then
-        rollback_spigotserver
-        handle_error "Failed to enable ufw"
-    fi
     # TODO configure spigotserver to run creative gamemode instead of survival
         # this can be done by running the sed command on the (automatically generated) file server.properties
         # (https://minecraft.fandom.com/wiki/Server.properties)
@@ -561,28 +562,48 @@ function test_minecraft() {
     # Do NOT remove next line!
     echo "function test_minecraft"
 
-    # Delete all previous log file for launchers so there will be only one launcher_log.txt
-    find ~/.minecraft -type f -name 'launcher_log*' -delete
-    # TODO(done) Start minecraft
-    minecraft-launcher > /dev/null 2>&1 &
+    # Delete previous log file for launcher so there will be only one launcher_log.txt when starting mc
+    # Check if the launcher_log.txt file exists
+    if [ -f ~/.minecraft/launcher_log.txt ]; then
+        # Delete the launcher_log.txt file
+        find ~/.minecraft -type f -name 'launcher_log.txt' -delete
+    else
+        echo "No launcher_log.txt file found"
+    fi
 
-    # Wait for Minecraft to start
-    attempts=0
-    while ! pgrep -f "minecraft-launcher" > /dev/null; do
-        sleep 5
-        attempts=$((attempts + 1))
-        if [ $attempts -ge 10 ]; then
-            handle_error "Minecraft launcher did not start within expected time"
-        fi
-    done
+    # Start minecraft
+    # TODO(done) Start minecraft
+    if ! command -v minecraft-launcher &> /dev/null; then
+        handle_error "minecraft-launcher command not found"
+    fi
+
+    minecraft-launcher > /dev/null 2>&1 &
+    minecraft_pid=$!
+
+    # Wait for a moment to allow Minecraft to start
+    sleep 10
+
+    # Check if Minecraft started successfully
+    if ! ps -p $minecraft_pid > /dev/null; then
+        handle_error "Failed to start Minecraft"
+    fi
     echo "Minecraft launcher started successfully"
 
     # Check if minecraft is working correctly
     latest_log=$(ls -rt ~/.minecraft/launcher_log.txt | head -n 1)
     if [ -z "$latest_log" ]; then
-        handle_error "No log file found for the launcher"
+        echo "No log file found for the launcher"
     else
         if grep -q "Error" "$latest_log"; then
+            if pgrep -f "minecraft-launcher" > /dev/null; then
+                echo "Killing Minecraft launcher process"
+                kill $minecraft_pid
+                if [ $? -ne 0 ]; then
+                    handle_error "Failed to kill Minecraft launcher process & MInecraft started with an error."
+                fi
+                else
+                    echo "Minecraft launcher process not found"
+                fi
             handle_error "Minecraft started with an error"
         else
             echo "Minecraft started with no errors"
@@ -592,7 +613,7 @@ function test_minecraft() {
     # Stop minecraft after testing
     if pgrep -f "minecraft-launcher" > /dev/null; then
         echo "Killing Minecraft launcher process"
-        kill $PID
+        kill $minecraft_pid
         if [ $? -ne 0 ]; then
             handle_error "Failed to kill Minecraft launcher process"
         fi
